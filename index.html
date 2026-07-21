@@ -2,412 +2,18 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>北京购房避雷地图</title>
-<style>
-  :root {
-    --bg: #f5f6f8;
-    --panel-bg: #ffffff;
-    --border: #e5e7eb;
-    --text-main: #1f2430;
-    --text-sub: #6b7280;
-    --accent: #2f6fed;
-    --radius: 12px;
-  }
-
-  * { box-sizing: border-box; }
-
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
-    background: var(--bg);
-    color: var(--text-main);
-  }
-
-  header {
-    padding: 18px 24px;
-    background: var(--panel-bg);
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: baseline;
-    gap: 14px;
-    flex-wrap: wrap;
-  }
-  header h1 {
-    font-size: 19px;
-    margin: 0;
-    font-weight: 700;
-  }
-  header .subtitle {
-    font-size: 13px;
-    color: var(--text-sub);
-  }
-  #data-status {
-    margin-left: auto;
-    font-size: 12px;
-    color: var(--text-sub);
-    background: var(--bg);
-    padding: 4px 10px;
-    border-radius: 20px;
-  }
-
-  /* ---------- loader ---------- */
-  #loader {
-    padding: 60px 24px;
-    text-align: center;
-    color: var(--text-sub);
-  }
-  #loader-text {
-    max-width: 520px;
-    margin: 0 auto 20px;
-    line-height: 1.7;
-    font-size: 14px;
-  }
-  #manual-load {
-    display: none;
-  }
-  #manual-load .hint {
-    max-width: 560px;
-    margin: 18px auto 0;
-    text-align: left;
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 14px 18px;
-    font-size: 12.5px;
-    color: var(--text-sub);
-    line-height: 1.8;
-  }
-  #manual-load code {
-    background: #eef0f3;
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 12px;
-  }
-  #file-input {
-    margin-top: 4px;
-  }
-
-  /* ---------- app layout ---------- */
-  #app {
-    display: none;
-    grid-template-columns: 1fr 340px;
-    grid-template-rows: auto 1fr;
-    gap: 16px;
-    padding: 16px 24px 24px;
-    max-width: 1400px;
-    margin: 0 auto;
-  }
-
-  #toolbar {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-
-  #filter-bar {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .filter-chip {
-    --chip-color: #888;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border-radius: 20px;
-    border: 1.5px solid var(--border);
-    background: #fff;
-    font-size: 13px;
-    cursor: pointer;
-    color: var(--text-main);
-    transition: all .15s ease;
-  }
-  .filter-chip .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    display: inline-block;
-  }
-  .filter-chip .chip-count {
-    font-size: 11px;
-    color: var(--text-sub);
-    background: var(--bg);
-    padding: 1px 6px;
-    border-radius: 10px;
-  }
-  .filter-chip.active {
-    border-color: var(--chip-color);
-    background: color-mix(in srgb, var(--chip-color) 10%, white);
-    font-weight: 600;
-  }
-
-  #clear-filter {
-    display: none;
-    align-items: center;
-    font-size: 12.5px;
-    color: var(--text-sub);
-    background: none;
-    border: none;
-    cursor: pointer;
-    text-decoration: underline;
-    padding: 4px 6px;
-  }
-
-  #search-box {
-    margin-left: auto;
-    position: relative;
-  }
-  #search-input {
-    width: 200px;
-    padding: 7px 12px;
-    border-radius: 20px;
-    border: 1.5px solid var(--border);
-    font-size: 13px;
-    outline: none;
-  }
-  #search-input:focus {
-    border-color: var(--accent);
-  }
-
-  /* ---------- map panel ---------- */
-  #map-panel {
-    background: var(--panel-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    position: relative;
-    min-height: 620px;
-    display: flex;
-    flex-direction: column;
-  }
-
-  #map-wrap {
-    position: relative;
-    flex: 1;
-  }
-
-  #map-svg {
-    width: 100%;
-    height: 100%;
-    display: block;
-    background: linear-gradient(180deg, #f8fafc, #eef1f6);
-    cursor: grab;
-  }
-  #map-svg.dragging { cursor: grabbing; }
-
-  .district-shape {
-    fill: #eef2f9;
-    stroke: #c9d2e3;
-    stroke-width: 1;
-    transition: fill .15s ease;
-  }
-  .district-shape:hover {
-    fill: #e3e9f5;
-  }
-  .district-label {
-    font-size: 11px;
-    fill: #9aa4b8;
-    text-anchor: middle;
-    pointer-events: none;
-    user-select: none;
-  }
-
-  .marker-group .marker-label {
-    font-size: 11.5px;
-    font-weight: 600;
-    paint-order: stroke;
-    stroke: #fff;
-    stroke-width: 3px;
-    stroke-linejoin: round;
-    user-select: none;
-  }
-  .marker-group:hover .marker-label,
-  .marker-group.selected .marker-label {
-    font-size: 12.5px;
-  }
-  .marker-group.selected circle {
-    filter: drop-shadow(0 0 0 2px #fff);
-  }
-
-  #map-legend {
-    position: absolute;
-    left: 12px;
-    bottom: 12px;
-    background: rgba(255,255,255,.92);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px 14px;
-    font-size: 12px;
-    line-height: 1.9;
-    box-shadow: 0 2px 10px rgba(0,0,0,.05);
-  }
-  #map-legend .legend-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  #map-legend .dot {
-    width: 9px; height: 9px; border-radius: 50%;
-  }
-
-  #zoom-controls {
-    position: absolute;
-    right: 12px;
-    top: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  #zoom-controls button {
-    width: 30px; height: 30px;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    background: #fff;
-    font-size: 15px;
-    cursor: pointer;
-    color: var(--text-main);
-  }
-  #zoom-controls button:hover { background: var(--bg); }
-
-  #map-footer {
-    padding: 8px 16px;
-    font-size: 12px;
-    color: var(--text-sub);
-    border-top: 1px solid var(--border);
-    display: flex;
-    justify-content: space-between;
-  }
-
-  /* ---------- side column ---------- */
-  #side-col {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    min-height: 620px;
-  }
-
-  #detail-panel {
-    background: var(--panel-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 18px;
-    min-height: 160px;
-  }
-  .detail-empty {
-    color: var(--text-sub);
-    font-size: 13px;
-    line-height: 1.7;
-  }
-  .detail-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin-bottom: 8px;
-  }
-  .detail-name {
-    font-size: 17px;
-    font-weight: 700;
-  }
-  .detail-badge {
-    font-size: 12px;
-    font-weight: 600;
-    padding: 3px 10px;
-    border-radius: 20px;
-  }
-  .detail-district {
-    font-size: 12.5px;
-    color: var(--text-sub);
-    margin-bottom: 10px;
-  }
-  .detail-reason-title {
-    font-size: 12.5px;
-    color: var(--text-sub);
-    margin-top: 10px;
-    margin-bottom: 4px;
-    font-weight: 600;
-  }
-  .detail-reason {
-    font-size: 13.5px;
-    line-height: 1.8;
-    white-space: pre-wrap;
-  }
-
-  #list-panel {
-    background: var(--panel-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 14px 0 6px;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  #list-panel h3 {
-    font-size: 13px;
-    margin: 0 16px 8px;
-    color: var(--text-sub);
-    font-weight: 600;
-  }
-  #community-list {
-    overflow-y: auto;
-    flex: 1;
-  }
-  .list-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 9px 16px;
-    font-size: 13px;
-    cursor: pointer;
-    border-left: 3px solid transparent;
-  }
-  .list-row:hover { background: var(--bg); }
-  .list-row.selected {
-    background: #eef4ff;
-    border-left-color: var(--accent);
-  }
-  .list-row .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    flex-shrink: 0;
-  }
-  .list-row .list-name {
-    flex: 1;
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .list-row .list-cat {
-    font-size: 11.5px;
-    font-weight: 600;
-    flex-shrink: 0;
-  }
-  .list-row .list-district {
-    font-size: 11px;
-    color: var(--text-sub);
-    flex-shrink: 0;
-  }
-  .list-empty {
-    padding: 20px 16px;
-    color: var(--text-sub);
-    font-size: 13px;
-  }
-
-  @media (max-width: 900px) {
-    #app { grid-template-columns: 1fr; }
-    #map-panel { min-height: 440px; }
-  }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>北京买房避雷地图</title>
+<link rel="stylesheet" href="style.css">
+<script charset="utf-8" src="https://map.qq.com/api/gljs?v=1.exp&key=RQABZ-YR7LG-J2TQG-QWIE3-B7ARV-QPFQS"></script>
 </head>
 <body>
 
-<header>
-  <h1>北京购房避雷地图</h1>
-  <span class="subtitle">按小区分类标注 · 数据来自 data.md，可自行维护</span>
+<header id="page-header">
+  <div class="title-row">
+    <h1>北京买房避雷地图</h1>
+    <span class="disclaimer">数据来源于网络，仅供参考</span>
+  </div>
   <span id="data-status"></span>
 </header>
 
@@ -416,62 +22,86 @@
   <div id="manual-load">
     <input type="file" id="file-input" accept=".md,text/markdown,text/plain">
     <div class="hint">
-      为什么会这样：浏览器出于安全考虑，禁止网页用 <code>fetch</code> 直接读取本地磁盘上的文件（file:// 协议）。
-      有两种办法都可以正常使用本页面：<br><br>
-      <b>方法一（推荐，之后维护更方便）：</b> 用命令行进入本文件夹，执行<br>
-      <code>python3 -m http.server 8080</code><br>
-      然后浏览器打开 <code>http://localhost:8080</code> 即可，以后改完 data.md 刷新页面就行。<br><br>
-      <b>方法二：</b> 直接点上面的按钮，手动选择同目录下的 <code>data.md</code> 文件加载。
+      如果一直停在这里：浏览器出于安全考虑，禁止网页用 <code>fetch</code> 直接读取本地磁盘上的文件（file:// 协议）。
+      点上面的按钮，手动选择同目录下的 <code>data.md</code> 文件即可加载；
+      如果是通过 http/https 网址打开本页面仍卡在这里，请检查 data.md 是否和 index.html 在同一目录。
     </div>
   </div>
 </div>
 
 <div id="app">
-  <div id="toolbar">
-    <div id="filter-bar"></div>
-    <button id="clear-filter">清除筛选</button>
+  <!-- 悬浮工具条 -->
+  <div id="map-toolbar">
     <div id="search-box">
       <input type="text" id="search-input" placeholder="搜索小区名称...">
     </div>
+    <button id="btn-filter" class="toolbar-btn">
+      筛选
+      <span id="filter-badge" class="badge"></span>
+    </button>
+    <button id="btn-list" class="toolbar-btn">列表</button>
   </div>
 
-  <div id="map-panel">
-    <div id="map-wrap">
-      <svg id="map-svg">
-        <g id="zoom-layer">
-          <g id="district-layer"></g>
-          <g id="marker-layer"></g>
-        </g>
-      </svg>
-      <div id="map-legend">
-        <div class="legend-row"><span class="dot" style="background:#d7263d"></span>避雷小区</div>
-        <div class="legend-row"><span class="dot" style="background:#e0a800"></span>跌幅过大 / 营销过度</div>
-        <div class="legend-row"><span class="dot" style="background:#f2790f"></span>不建议买</div>
-      </div>
-      <div id="zoom-controls">
-        <button id="zoom-in" title="放大">＋</button>
-        <button id="zoom-out" title="缩小">－</button>
-        <button id="zoom-reset" title="重置">⟳</button>
-      </div>
+  <!-- 地图 -->
+  <div id="map-container"></div>
+
+  <!-- 图例 -->
+  <div id="map-legend">
+    <div class="legend-row"><span class="dot" style="background:#d7263d"></span>避雷小区</div>
+    <div class="legend-row"><span class="dot" style="background:#e0a800"></span>跌幅过大 / 营销过度</div>
+    <div class="legend-row"><span class="dot" style="background:#f2790f"></span>不建议买</div>
+  </div>
+
+  <!-- 底部状态条 -->
+  <div id="map-footer">
+    <span>当前显示 <b id="visible-count">0</b> / <b id="total-count">0</b> 个小区</span>
+  </div>
+
+  <!-- 抽屉遮罩 -->
+  <div id="drawer-backdrop"></div>
+
+  <!-- 筛选抽屉 -->
+  <div id="filter-drawer" class="drawer">
+    <div class="drawer-header">
+      <span>筛选</span>
+      <button id="filter-drawer-close" class="drawer-close">✕</button>
     </div>
-    <div id="map-footer">
-      <span>当前显示 <b id="visible-count">0</b> / <b id="total-count">0</b> 个小区</span>
-      <span>滚轮缩放 · 拖动平移</span>
+    <div class="drawer-body">
+      <div class="filter-section-title">按分类</div>
+      <div id="category-filters" class="filter-chip-group"></div>
+      <div class="filter-section-title">按行政区</div>
+      <div id="district-filters" class="filter-chip-group"></div>
+      <button id="clear-filter" class="clear-filter-btn">清除全部筛选</button>
     </div>
   </div>
 
-  <div id="side-col">
-    <div id="detail-panel">
-      <div class="detail-empty">点击地图上的小区名称，或下方列表中的小区，查看分类和详细原因</div>
+  <!-- 列表抽屉 -->
+  <div id="list-drawer" class="drawer">
+    <div class="drawer-header">
+      <span>小区列表</span>
+      <button id="list-drawer-close" class="drawer-close">✕</button>
     </div>
-    <div id="list-panel">
-      <h3>小区列表</h3>
+    <div class="drawer-body no-pad">
       <div id="community-list"></div>
+    </div>
+  </div>
+
+  <!-- 详情弹窗 -->
+  <div id="detail-modal">
+    <div id="detail-backdrop"></div>
+    <div id="detail-card">
+      <button id="detail-close" class="detail-close-btn">✕</button>
+      <div class="detail-header">
+        <div id="detail-name" class="detail-name"></div>
+        <span id="detail-badge" class="detail-badge"></span>
+      </div>
+      <div id="detail-address" class="detail-address"></div>
+      <div class="detail-reason-title">具体原因</div>
+      <div id="detail-reason" class="detail-reason"></div>
     </div>
   </div>
 </div>
 
-<script src="beijing_geo.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

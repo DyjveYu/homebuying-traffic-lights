@@ -1,35 +1,29 @@
 // ===================== 配置 =====================
 const CATEGORY_STYLE = {
-  '避雷小区':   { color: '#d7263d', label: '避雷小区',       badgeBg: '#fdecee' },
-  '跌幅过大':   { color: '#e0a800', label: '跌幅过大',       badgeBg: '#fff8e1' },
-  '营销过度':   { color: '#e0a800', label: '营销过度',       badgeBg: '#fff8e1' },
-  '不建议买':   { color: '#f2790f', label: '不建议买',       badgeBg: '#fff1e0' },
+  '避雷小区':   { color: '#d7263d', label: '避雷小区',   badgeBg: '#fdecee' },
+  '跌幅过大':   { color: '#e0a800', label: '跌幅过大',   badgeBg: '#fff8e1' },
+  '营销过度':   { color: '#e0a800', label: '营销过度',   badgeBg: '#fff8e1' },
+  '不建议买':   { color: '#f2790f', label: '不建议买',   badgeBg: '#fff1e0' },
 };
 const DEFAULT_STYLE = { color: '#6b7280', label: '未分类', badgeBg: '#f1f2f4' };
+function styleOf(category) { return CATEGORY_STYLE[category] || DEFAULT_STYLE; }
 
-function styleOf(category) {
-  return CATEGORY_STYLE[category] || DEFAULT_STYLE;
-}
+const BEIJING_CENTER = { lat: 39.9042, lng: 116.4074 };
+const CLUSTER_PIXEL_RADIUS = 46; // 聚合判定的像素距离
 
 // ===================== 状态 =====================
 let allCommunities = [];
-let activeFilters = new Set(); // 空集合 = 全部显示
-let selectedId = null;
+let map = null;
+let overlays = []; // 当前地图上的自定义 DOMOverlay 实例
+let activeCategoryFilters = new Set();
+let activeDistrictFilters = new Set();
 let searchKeyword = '';
+let refreshTimer = null;
+let lastZoom = null;
 
 // ===================== Markdown 解析 =====================
-// 期望格式:
-// ### 小区名称
-// - 分类: xxx
-// - 所在区: xxx
-// - 经度: 116.xx
-// - 纬度: 39.xx
-// - 原因: xxxxx
-// ---
 function parseMarkdown(text) {
-  // 去掉 HTML 注释块 <!-- ... -->
   text = text.replace(/<!--[\s\S]*?-->/g, '');
-
   const blocks = text.split(/^\s*---\s*$/m).map(b => b.trim()).filter(Boolean);
   const items = [];
 
@@ -46,196 +40,23 @@ function parseMarkdown(text) {
 
     const category = getField('分类');
     const district = getField('所在区');
+    const address = getField('地址');
     const lng = parseFloat(getField('经度'));
     const lat = parseFloat(getField('纬度'));
 
-    // 原因 字段可能跨多行：从 "- 原因:" 开始，直到本 block 结束
     let reason = '';
     const reasonStart = block.match(/^-\s*原因\s*[:：]\s*([\s\S]*)$/m);
-    if (reasonStart) {
-      reason = reasonStart[1].trim();
-    }
+    if (reasonStart) reason = reasonStart[1].trim();
 
     if (!name || !category || isNaN(lng) || isNaN(lat)) {
       console.warn('跳过格式不完整的小区区块:', name || `(第${idx + 1}块)`);
       return;
     }
 
-    items.push({
-      id: 'c' + idx + '_' + name,
-      name, category, district, lng, lat, reason
-    });
+    items.push({ id: 'c' + idx + '_' + name, name, category, district, address, lng, lat, reason });
   });
 
   return items;
-}
-
-// ===================== 地图投影 =====================
-// 根据北京 geojson 的经纬度范围，做等经纬度投影（带纬度余弦修正）
-let projectPoint = null;
-let districtPaths = [];
-
-const VIEW_W = 800, VIEW_H = 860, PAD = 30;
-
-function buildProjection(geojson) {
-  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
-  const walk = (coords) => {
-    if (typeof coords[0] === 'number') {
-      const [x, y] = coords;
-      if (x < minLon) minLon = x;
-      if (x > maxLon) maxLon = x;
-      if (y < minLat) minLat = y;
-      if (y > maxLat) maxLat = y;
-    } else {
-      coords.forEach(walk);
-    }
-  };
-  geojson.features.forEach(f => walk(f.geometry.coordinates));
-
-  const latMid = (minLat + maxLat) / 2;
-  const cos = Math.cos(latMid * Math.PI / 180);
-
-  const spanX = (maxLon - minLon) * cos;
-  const spanY = (maxLat - minLat);
-
-  const availW = VIEW_W - PAD * 2;
-  const availH = VIEW_H - PAD * 2;
-  const scale = Math.min(availW / spanX, availH / spanY);
-
-  const offsetX = PAD + (availW - spanX * scale) / 2;
-  const offsetY = PAD + (availH - spanY * scale) / 2;
-
-  projectPoint = (lng, lat) => {
-    const x = (lng - minLon) * cos * scale + offsetX;
-    const y = (maxLat - lat) * scale + offsetY;
-    return [x, y];
-  };
-}
-
-function ringToPath(ring) {
-  return ring.map(([lng, lat], i) => {
-    const [x, y] = projectPoint(lng, lat);
-    return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
-  }).join(' ') + ' Z';
-}
-
-function polygonToPath(coords) {
-  // coords: array of rings
-  return coords.map(ringToPath).join(' ');
-}
-
-function buildDistrictPaths(geojson) {
-  districtPaths = geojson.features.map(f => {
-    const geom = f.geometry;
-    let d = '';
-    if (geom.type === 'Polygon') {
-      d = polygonToPath(geom.coordinates);
-    } else if (geom.type === 'MultiPolygon') {
-      d = geom.coordinates.map(polygonToPath).join(' ');
-    }
-    const [cx, cy] = projectPoint(f.properties.cp[0], f.properties.cp[1]);
-    return { name: f.properties.name, d, cx, cy };
-  });
-}
-
-// ===================== 渲染：底图 =====================
-function renderBaseMap() {
-  const svg = document.getElementById('map-svg');
-  svg.setAttribute('viewBox', `0 0 ${VIEW_W} ${VIEW_H}`);
-
-  const layer = document.getElementById('district-layer');
-  layer.innerHTML = '';
-
-  districtPaths.forEach(d => {
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', d.d);
-    path.setAttribute('class', 'district-shape');
-    layer.appendChild(path);
-
-    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    label.setAttribute('x', d.cx);
-    label.setAttribute('y', d.cy);
-    label.setAttribute('class', 'district-label');
-    label.textContent = d.name;
-    layer.appendChild(label);
-  });
-}
-
-// ===================== 渲染：小区标注 =====================
-function passesFilter(item) {
-  if (activeFilters.size > 0 && !activeFilters.has(item.category)) return false;
-  if (searchKeyword && !item.name.toLowerCase().includes(searchKeyword.toLowerCase())) return false;
-  return true;
-}
-
-function renderMarkers() {
-  const layer = document.getElementById('marker-layer');
-  layer.innerHTML = '';
-
-  const visible = allCommunities.filter(passesFilter);
-
-  visible.forEach(item => {
-    const [x, y] = projectPoint(item.lng, item.lat);
-    const style = styleOf(item.category);
-    const isSelected = item.id === selectedId;
-
-    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    g.setAttribute('class', 'marker-group' + (isSelected ? ' selected' : ''));
-    g.setAttribute('data-id', item.id);
-    g.style.cursor = 'pointer';
-
-    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    dot.setAttribute('cx', x);
-    dot.setAttribute('cy', y);
-    dot.setAttribute('r', isSelected ? 6 : 4.5);
-    dot.setAttribute('fill', style.color);
-    dot.setAttribute('stroke', '#fff');
-    dot.setAttribute('stroke-width', '1.5');
-    g.appendChild(dot);
-
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('x', x + 7);
-    text.setAttribute('y', y + 3);
-    text.setAttribute('class', 'marker-label');
-    text.setAttribute('fill', style.color);
-    text.textContent = item.name;
-    g.appendChild(text);
-
-    g.addEventListener('click', () => selectCommunity(item.id));
-    layer.appendChild(g);
-  });
-
-  document.getElementById('visible-count').textContent = visible.length;
-  document.getElementById('total-count').textContent = allCommunities.length;
-}
-
-// ===================== 详情面板 =====================
-function selectCommunity(id) {
-  selectedId = id;
-  renderMarkers();
-  renderDetail();
-  renderList();
-}
-
-function renderDetail() {
-  const panel = document.getElementById('detail-panel');
-  const item = allCommunities.find(c => c.id === selectedId);
-
-  if (!item) {
-    panel.innerHTML = `<div class="detail-empty">点击地图上的小区名称，或下方列表中的小区，查看分类和详细原因</div>`;
-    return;
-  }
-
-  const style = styleOf(item.category);
-  panel.innerHTML = `
-    <div class="detail-header">
-      <div class="detail-name">${escapeHtml(item.name)}</div>
-      <span class="detail-badge" style="color:${style.color};background:${style.badgeBg};border:1px solid ${style.color}33">${escapeHtml(style.label)}</span>
-    </div>
-    ${item.district ? `<div class="detail-district">📍 ${escapeHtml(item.district)}</div>` : ''}
-    <div class="detail-reason-title">具体原因</div>
-    <div class="detail-reason">${escapeHtml(item.reason).replace(/\n/g, '<br>')}</div>
-  `;
 }
 
 function escapeHtml(str) {
@@ -244,35 +65,253 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// ===================== 筛选栏 =====================
-function renderFilterBar() {
-  const bar = document.getElementById('filter-bar');
-  const categories = Array.from(new Set(allCommunities.map(c => c.category)));
+// ===================== 过滤 =====================
+function passesFilter(item) {
+  if (activeCategoryFilters.size > 0 && !activeCategoryFilters.has(item.category)) return false;
+  if (activeDistrictFilters.size > 0 && !activeDistrictFilters.has(item.district)) return false;
+  if (searchKeyword && !item.name.toLowerCase().includes(searchKeyword.toLowerCase())) return false;
+  return true;
+}
 
-  bar.innerHTML = '';
+// ===================== 自定义 DOM 覆盖物：单个小区标注 =====================
+function defineOverlayClasses() {
+  // 单点：彩色圆点 + 小区名称
+  window.CommunityOverlay = class extends TMap.DOMOverlay {
+    onInit(options) {
+      this.item = options.item;
+      this.position = options.position;
+      this.onSelect = options.onSelect;
+    }
+    createDOM() {
+      const style = styleOf(this.item.category);
+      const dom = document.createElement('div');
+      dom.className = 'map-marker';
+      dom.innerHTML = `
+        <span class="map-marker-dot" style="background:${style.color}"></span>
+        <span class="map-marker-label" style="color:${style.color}">${escapeHtml(this.item.name)}</span>
+      `;
+      dom.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.onSelect(this.item);
+      });
+      return dom;
+    }
+    updateDOM() {
+      if (!this.map) return;
+      const pixel = this.map.projectToContainer(this.position);
+      this.dom.style.left = (pixel.getX()) + 'px';
+      this.dom.style.top = (pixel.getY()) + 'px';
+    }
+  };
+
+  // 聚合气泡
+  window.ClusterOverlay = class extends TMap.DOMOverlay {
+    onInit(options) {
+      this.position = options.position;
+      this.count = options.count;
+      this.dominantColor = options.dominantColor;
+      this.onExpand = options.onExpand;
+    }
+    createDOM() {
+      const dom = document.createElement('div');
+      dom.className = 'map-cluster';
+      const size = Math.min(56, 34 + this.count * 2);
+      dom.style.width = size + 'px';
+      dom.style.height = size + 'px';
+      dom.style.lineHeight = size + 'px';
+      dom.style.background = this.dominantColor;
+      dom.textContent = this.count;
+      dom.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.onExpand(this.position);
+      });
+      return dom;
+    }
+    updateDOM() {
+      if (!this.map) return;
+      const pixel = this.map.projectToContainer(this.position);
+      this.dom.style.left = pixel.getX() + 'px';
+      this.dom.style.top = pixel.getY() + 'px';
+    }
+  };
+}
+
+// ===================== 聚合计算（基于屏幕像素距离，纯前端实现） =====================
+function computeClusters(points, radiusPx) {
+  const used = new Array(points.length).fill(false);
+  const groups = [];
+  for (let i = 0; i < points.length; i++) {
+    if (used[i]) continue;
+    const group = [points[i]];
+    used[i] = true;
+    for (let j = i + 1; j < points.length; j++) {
+      if (used[j]) continue;
+      const dx = points[i].px.getX() - points[j].px.getX();
+      const dy = points[i].px.getY() - points[j].px.getY();
+      if (Math.sqrt(dx * dx + dy * dy) <= radiusPx) {
+        group.push(points[j]);
+        used[j] = true;
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
+}
+
+function clearOverlays() {
+  overlays.forEach(o => { try { o.setMap(null); } catch (e) {} });
+  overlays = [];
+}
+
+function refreshMarkers() {
+  if (!map || typeof TMap === 'undefined') return;
+  clearOverlays();
+
+  const visible = allCommunities.filter(passesFilter);
+  const points = visible.map(item => {
+    const latLng = new TMap.LatLng(item.lat, item.lng);
+    return { item, latLng, px: map.projectToContainer(latLng) };
+  });
+
+  const groups = computeClusters(points, CLUSTER_PIXEL_RADIUS);
+
+  groups.forEach(group => {
+    if (group.length >= 2) {
+      // 聚合气泡：中心取组内平均经纬度，颜色取组内出现最多的分类颜色
+      let sumLat = 0, sumLng = 0;
+      const colorCount = {};
+      group.forEach(g => {
+        sumLat += g.item.lat;
+        sumLng += g.item.lng;
+        const c = styleOf(g.item.category).color;
+        colorCount[c] = (colorCount[c] || 0) + 1;
+      });
+      const centerLatLng = new TMap.LatLng(sumLat / group.length, sumLng / group.length);
+      let dominantColor = '#4a5568';
+      let maxCount = 0;
+      Object.keys(colorCount).forEach(c => {
+        if (colorCount[c] > maxCount) { maxCount = colorCount[c]; dominantColor = c; }
+      });
+
+      const cluster = new ClusterOverlay({
+        map,
+        position: centerLatLng,
+        count: group.length,
+        dominantColor,
+        onExpand: (pos) => {
+          map.setCenter(pos);
+          map.setZoom(Math.min(18, map.getZoom() + 2));
+        }
+      });
+      overlays.push(cluster);
+    } else {
+      const g = group[0];
+      const marker = new CommunityOverlay({
+        map,
+        position: g.latLng,
+        item: g.item,
+        onSelect: openDetail
+      });
+      overlays.push(marker);
+    }
+  });
+
+  document.getElementById('visible-count').textContent = visible.length;
+  document.getElementById('total-count').textContent = allCommunities.length;
+  renderListDrawer();
+}
+
+function scheduleRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(refreshMarkers, 80);
+}
+
+// ===================== 详情弹窗 =====================
+function openDetail(item) {
+  const style = styleOf(item.category);
+  const modal = document.getElementById('detail-modal');
+  document.getElementById('detail-name').textContent = item.name;
+  const badge = document.getElementById('detail-badge');
+  badge.textContent = style.label;
+  badge.style.color = style.color;
+  badge.style.background = style.badgeBg;
+  badge.style.border = `1px solid ${style.color}33`;
+
+  const addrEl = document.getElementById('detail-address');
+  if (item.address) {
+    addrEl.style.display = 'block';
+    addrEl.textContent = '📍 ' + item.address;
+  } else {
+    addrEl.style.display = 'none';
+  }
+
+  document.getElementById('detail-reason').innerHTML = escapeHtml(item.reason).replace(/\n/g, '<br>');
+  modal.classList.add('open');
+}
+
+function closeDetail() {
+  document.getElementById('detail-modal').classList.remove('open');
+}
+
+// ===================== 筛选面板 =====================
+function renderFilterPanel() {
+  const catWrap = document.getElementById('category-filters');
+  const distWrap = document.getElementById('district-filters');
+
+  const categories = Array.from(new Set(allCommunities.map(c => c.category)));
+  const districts = Array.from(new Set(allCommunities.map(c => c.district).filter(Boolean)));
+
+  catWrap.innerHTML = '';
   categories.forEach(cat => {
     const style = styleOf(cat);
     const btn = document.createElement('button');
-    btn.className = 'filter-chip' + (activeFilters.has(cat) ? ' active' : '');
+    btn.className = 'filter-chip' + (activeCategoryFilters.has(cat) ? ' active' : '');
     btn.style.setProperty('--chip-color', style.color);
     btn.innerHTML = `<span class="dot" style="background:${style.color}"></span>${escapeHtml(cat)}
       <span class="chip-count">${allCommunities.filter(c => c.category === cat).length}</span>`;
     btn.addEventListener('click', () => {
-      if (activeFilters.has(cat)) activeFilters.delete(cat);
-      else activeFilters.add(cat);
-      renderFilterBar();
-      renderMarkers();
-      renderList();
+      if (activeCategoryFilters.has(cat)) activeCategoryFilters.delete(cat);
+      else activeCategoryFilters.add(cat);
+      renderFilterPanel();
+      scheduleRefresh();
+      updateFilterBadge();
     });
-    bar.appendChild(btn);
+    catWrap.appendChild(btn);
   });
 
-  const clearBtn = document.getElementById('clear-filter');
-  clearBtn.style.display = activeFilters.size > 0 ? 'inline-flex' : 'none';
+  distWrap.innerHTML = '';
+  districts.forEach(d => {
+    const btn = document.createElement('button');
+    btn.className = 'filter-chip district-chip' + (activeDistrictFilters.has(d) ? ' active' : '');
+    btn.innerHTML = `${escapeHtml(d)}
+      <span class="chip-count">${allCommunities.filter(c => c.district === d).length}</span>`;
+    btn.addEventListener('click', () => {
+      if (activeDistrictFilters.has(d)) activeDistrictFilters.delete(d);
+      else activeDistrictFilters.add(d);
+      renderFilterPanel();
+      scheduleRefresh();
+      updateFilterBadge();
+    });
+    distWrap.appendChild(btn);
+  });
+
+  document.getElementById('clear-filter').style.display =
+    (activeCategoryFilters.size > 0 || activeDistrictFilters.size > 0) ? 'inline-flex' : 'none';
 }
 
-// ===================== 列表视图 =====================
-function renderList() {
+function updateFilterBadge() {
+  const count = activeCategoryFilters.size + activeDistrictFilters.size;
+  const badge = document.getElementById('filter-badge');
+  if (count > 0) {
+    badge.style.display = 'inline-flex';
+    badge.textContent = count;
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+// ===================== 列表抽屉 =====================
+function renderListDrawer() {
   const list = document.getElementById('community-list');
   const visible = allCommunities.filter(passesFilter);
   list.innerHTML = '';
@@ -285,16 +324,65 @@ function renderList() {
   visible.forEach(item => {
     const style = styleOf(item.category);
     const row = document.createElement('div');
-    row.className = 'list-row' + (item.id === selectedId ? ' selected' : '');
+    row.className = 'list-row';
     row.innerHTML = `
       <span class="dot" style="background:${style.color}"></span>
       <span class="list-name">${escapeHtml(item.name)}</span>
       <span class="list-cat" style="color:${style.color}">${escapeHtml(item.category)}</span>
       ${item.district ? `<span class="list-district">${escapeHtml(item.district)}</span>` : ''}
     `;
-    row.addEventListener('click', () => selectCommunity(item.id));
+    row.addEventListener('click', () => {
+      map.setCenter(new TMap.LatLng(item.lat, item.lng));
+      map.setZoom(15);
+      closeDrawers();
+      openDetail(item);
+    });
     list.appendChild(row);
   });
+}
+
+// ===================== 抽屉开关 =====================
+function closeDrawers() {
+  document.getElementById('filter-drawer').classList.remove('open');
+  document.getElementById('list-drawer').classList.remove('open');
+  document.getElementById('drawer-backdrop').classList.remove('open');
+}
+
+function openDrawer(id) {
+  closeDrawers();
+  document.getElementById(id).classList.add('open');
+  document.getElementById('drawer-backdrop').classList.add('open');
+}
+
+// ===================== 地图初始化 =====================
+function initMap() {
+  defineOverlayClasses();
+  const container = document.getElementById('map-container');
+  map = new TMap.Map(container, {
+    center: new TMap.LatLng(BEIJING_CENTER.lat, BEIJING_CENTER.lng),
+    zoom: 10.5,
+    pitch: 0,
+    disableDefaultUI: false,
+    showControl: false
+  });
+
+  lastZoom = map.getZoom();
+
+  map.on('zoom_changed', scheduleRefresh);
+  map.on('drag_end', scheduleRefresh);
+  map.on('resize', scheduleRefresh);
+  map.on('idle', scheduleRefresh);
+
+  // 兜底：轮询检测缩放级别变化，避免个别事件名不触发导致聚合不刷新
+  setInterval(() => {
+    const z = map.getZoom();
+    if (Math.abs(z - lastZoom) > 0.01) {
+      lastZoom = z;
+      scheduleRefresh();
+    }
+  }, 400);
+
+  refreshMarkers();
 }
 
 // ===================== 数据加载 =====================
@@ -302,19 +390,24 @@ function initWithData(text) {
   allCommunities = parseMarkdown(text);
   document.getElementById('data-status').textContent = `已加载 ${allCommunities.length} 个小区`;
   document.getElementById('loader').style.display = 'none';
-  document.getElementById('app').style.display = 'grid';
+  document.getElementById('app').style.display = 'block';
 
-  buildProjection(BEIJING_GEOJSON);
-  buildDistrictPaths(BEIJING_GEOJSON);
-  renderBaseMap();
-  renderFilterBar();
-  renderMarkers();
-  renderDetail();
-  renderList();
+  renderFilterPanel();
+
+  if (typeof TMap !== 'undefined') {
+    initMap();
+  } else {
+    // TMap 脚本可能还没加载完，等待一下
+    const waitTMap = setInterval(() => {
+      if (typeof TMap !== 'undefined') {
+        clearInterval(waitTMap);
+        initMap();
+      }
+    }, 200);
+  }
 }
 
-function showManualLoad(message) {
-  document.getElementById('loader-text').textContent = message;
+function showManualLoad() {
   document.getElementById('manual-load').style.display = 'block';
 }
 
@@ -325,7 +418,7 @@ async function loadData() {
     const text = await res.text();
     initWithData(text);
   } catch (e) {
-    showManualLoad('无法通过浏览器直接读取本地 data.md 文件（这是浏览器的安全限制，不是故障）。请在下方手动选择该文件，或参考下面的说明启动一个本地服务器。');
+    showManualLoad();
   }
 }
 
@@ -343,70 +436,34 @@ function setupManualFilePicker() {
   });
 }
 
-// ===================== 搜索 =====================
-function setupSearch() {
-  const input = document.getElementById('search-input');
-  input.addEventListener('input', () => {
-    searchKeyword = input.value.trim();
-    renderMarkers();
-    renderList();
+// ===================== 搜索 / 按钮绑定 =====================
+function setupUI() {
+  document.getElementById('search-input').addEventListener('input', (e) => {
+    searchKeyword = e.target.value.trim();
+    scheduleRefresh();
   });
-}
 
-// ===================== 地图缩放/平移 =====================
-function setupMapZoomPan() {
-  const svg = document.getElementById('map-svg');
-  const zoomLayer = document.getElementById('zoom-layer');
-  let scale = 1, tx = 0, ty = 0;
-  let dragging = false, lastX = 0, lastY = 0;
+  document.getElementById('btn-filter').addEventListener('click', () => openDrawer('filter-drawer'));
+  document.getElementById('btn-list').addEventListener('click', () => openDrawer('list-drawer'));
+  document.getElementById('filter-drawer-close').addEventListener('click', closeDrawers);
+  document.getElementById('list-drawer-close').addEventListener('click', closeDrawers);
+  document.getElementById('drawer-backdrop').addEventListener('click', closeDrawers);
 
-  function applyTransform() {
-    zoomLayer.setAttribute('transform', `translate(${tx},${ty}) scale(${scale})`);
-  }
+  document.getElementById('clear-filter').addEventListener('click', () => {
+    activeCategoryFilters.clear();
+    activeDistrictFilters.clear();
+    renderFilterPanel();
+    updateFilterBadge();
+    scheduleRefresh();
+  });
 
-  svg.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const rect = svg.getBoundingClientRect();
-    const mx = (e.clientX - rect.left) / rect.width * VIEW_W;
-    const my = (e.clientY - rect.top) / rect.height * VIEW_H;
-    const delta = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    const newScale = Math.min(8, Math.max(1, scale * delta));
-    tx = mx - (mx - tx) * (newScale / scale);
-    ty = my - (my - ty) * (newScale / scale);
-    scale = newScale;
-    applyTransform();
-  }, { passive: false });
-
-  svg.addEventListener('mousedown', (e) => {
-    dragging = true; lastX = e.clientX; lastY = e.clientY;
-    svg.classList.add('dragging');
-  });
-  window.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    const rect = svg.getBoundingClientRect();
-    const dx = (e.clientX - lastX) / rect.width * VIEW_W;
-    const dy = (e.clientY - lastY) / rect.height * VIEW_H;
-    tx += dx; ty += dy;
-    lastX = e.clientX; lastY = e.clientY;
-    applyTransform();
-  });
-  window.addEventListener('mouseup', () => { dragging = false; svg.classList.remove('dragging'); });
-
-  document.getElementById('zoom-reset').addEventListener('click', () => {
-    scale = 1; tx = 0; ty = 0; applyTransform();
-  });
-  document.getElementById('zoom-in').addEventListener('click', () => {
-    scale = Math.min(8, scale * 1.3); applyTransform();
-  });
-  document.getElementById('zoom-out').addEventListener('click', () => {
-    scale = Math.max(1, scale / 1.3); applyTransform();
-  });
+  document.getElementById('detail-close').addEventListener('click', closeDetail);
+  document.getElementById('detail-backdrop').addEventListener('click', closeDetail);
 }
 
 // ===================== 启动 =====================
 window.addEventListener('DOMContentLoaded', () => {
   setupManualFilePicker();
-  setupSearch();
-  setupMapZoomPan();
+  setupUI();
   loadData();
 });
